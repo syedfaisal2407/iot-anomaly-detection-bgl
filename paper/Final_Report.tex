@@ -1,0 +1,868 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{balance}
+\usepackage{multirow}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue
+}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Explainable Anomaly Detection in IoT System Logs\\
+Using XGBoost, Random Forest, SMOTE, and SHAP}
+
+\author{
+  \IEEEauthorblockN{Faisal Ahamed Syed}
+  \IEEEauthorblockA{
+    \textit{Department of Computer Information Systems and Cybersecurity}\\
+    \textit{Auburn University at Montgomery}\\
+    Montgomery, AL, USA\\
+    fsyed8@aum.edu
+  }
+}
+
+\maketitle
+
+% ────────────────────────────────────────────────────────────────────────
+\begin{abstract}
+Anomaly detection in Internet of Things (IoT) system logs is a critical
+operational security challenge. Existing approaches rely on black-box
+classifiers that provide no explanation for their predictions and fail to
+correct for the severe class imbalance inherent in real-world log data. This
+paper extends the work of Nguyen and Nguyen \cite{nguyen2023} by introducing
+two targeted enhancements to their IoT log anomaly detection pipeline:
+Synthetic Minority Oversampling Technique (SMOTE) \cite{chawla2002} to address
+class imbalance, and SHapley Additive exPlanations (SHAP) \cite{lundberg2017}
+to provide post-hoc interpretability. Experiments are conducted on the
+Blue Gene/L (BGL) supercomputer log dataset \cite{zhu2023loghub} comprising
+4{,}747{,}963 entries with a 7.34\% anomaly rate. Logs are parsed using
+Drain3 \cite{he2017drain}, yielding 1{,}823 unique event templates, from
+which five structural features are extracted. Four experimental conditions
+evaluate Random Forest (RF) and XGBoost each trained with and without SMOTE.
+Results show that SMOTE consistently improves Recall from 0.9932 to 0.9995
+for both classifiers, capturing approximately 434 additional true anomalies
+per 69{,}692 test anomalies at the cost of a minor Precision reduction of
+0.88\%. SHAP TreeExplainer identifies template frequency as the dominant
+predictive feature, revealing that logs following rare event templates are
+systematically associated with anomalous behaviour --- an operationally
+meaningful finding unavailable from accuracy metrics alone. Compared to the
+BGL state-of-the-art benchmark established by LogAnomaly
+\cite{meng2019loganomaly} (96\% F1), this work achieves 99.54\% F1 using a
+simpler, non-sequential tree-based approach while additionally providing full
+feature-level explainability and explicit imbalance correction.
+\end{abstract}
+
+\begin{IEEEkeywords}
+IoT log anomaly detection, SMOTE, SHAP, XGBoost, Random Forest,
+Drain3, BGL dataset, explainability, class imbalance
+\end{IEEEkeywords}
+
+% ────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+\label{sec:intro}
+
+The proliferation of Internet of Things (IoT) devices has introduced a
+challenging class of security problem: the continuous, high-volume generation
+of system logs that must be monitored for anomalous behaviour in near real
+time. IoT devices, from industrial sensors to network infrastructure, generate
+millions of log entries per day. These logs contain the earliest signals of
+hardware faults, network intrusions, and system failures. Manual inspection is
+infeasible at this scale, and rule-based monitoring systems fail to generalise
+across the diverse and evolving log formats produced by heterogeneous IoT
+deployments.
+
+Machine learning classifiers have emerged as the dominant approach to
+automated log anomaly detection. Nguyen and Nguyen \cite{nguyen2023}
+demonstrated that XGBoost achieves a 99.9\% F1-score on IoT log data parsed
+through the Drain algorithm \cite{he2017drain}, outperforming Random Forest,
+k-Nearest Neighbours, Artificial Neural Networks, and Autoencoders on the
+Thunderbird and Spirit supercomputer log datasets. However, their study leaves
+two critical gaps unaddressed. First, \textit{class imbalance}: real-world log
+datasets contain far fewer anomalous entries than normal ones. The authors
+attribute their Autoencoder model's 29-point accuracy degradation to this
+imbalance yet apply no correction. Second, \textit{explainability}: despite
+strong aggregate metrics, no mechanism is provided to explain why any
+individual log entry is classified as anomalous, limiting operational utility
+for security practitioners who must triage and act on flagged events.
+
+Recent work by Alam et al.\ \cite{alam2024sxad} --- the SXAD framework ---
+applied Kernel SHAP to Drain-parsed HDFS log data, demonstrating XAI-driven
+log anomaly detection. However, SXAD does not address class imbalance, has
+not been evaluated on the BGL dataset, and uses Kernel SHAP --- a
+model-agnostic approximation --- rather than the exact Shapley values
+computed by TreeExplainer for tree-based models. No published study combines
+SMOTE and SHAP on parsed IoT system log data, and none applies this
+combination to BGL specifically.
+
+\subsection{Problem Formulation}
+
+Given a stream of IoT system log messages
+$\mathcal{L} = \{l_1, l_2, \ldots, l_N\}$ where $l_i$ is a raw textual log
+line, the binary anomaly detection task is to learn a classifier
+$f: l_i \mapsto y_i \in \{0, 1\}$ where $y_i = 1$ denotes an anomalous log
+entry. The challenge is twofold: (i) the class distribution is severely
+imbalanced with $|\{i : y_i = 1\}| \ll |\{i : y_i = 0\}|$; and (ii) the
+classifier $f$ must be interpretable, producing not only predictions but also
+attributable explanations for each decision.
+
+\subsection{Contributions}
+
+This paper makes the following contributions:
+
+\begin{enumerate}
+  \item Full-dataset Drain3 parsing of 4{,}747{,}963 BGL log entries yielding
+        1{,}823 unique event templates.
+  \item SMOTE applied exclusively to the training partition to correct the
+        7.34\% anomaly rate without data leakage.
+  \item A controlled four-run experiment (RF and XGBoost, each with and
+        without SMOTE) isolating SMOTE's effect on Recall.
+  \item SHAP TreeExplainer analysis producing global feature importance,
+        directional beeswarm visualisation, and instance-level waterfall
+        explanations for the best-performing model.
+  \item Identification of 20 specific anomalous BGL templates with associated
+        operational remediation guidance, translating model output into
+        actionable security intelligence.
+\end{enumerate}
+
+The remainder of this paper is organised as follows. Section~\ref{sec:related}
+reviews related work. Section~\ref{sec:methodology} describes the methodology.
+Section~\ref{sec:setup} presents the experimental setup.
+Section~\ref{sec:results} reports and discusses results.
+Section~\ref{sec:novelty} articulates the novelty of this work.
+Section~\ref{sec:conclusion} concludes with future directions.
+
+% ────────────────────────────────────────────────────────────────────────
+\section{Related Work}
+\label{sec:related}
+
+\subsection{ML-Based IoT Log Anomaly Detection}
+
+Nguyen and Nguyen \cite{nguyen2023} established the foundational pipeline
+this study extends. Their approach applies Drain to parse IoT log messages
+into structured event templates, extracts numeric features, and compares five
+classifiers on the Thunderbird and Spirit supercomputer log datasets. XGBoost
+achieves 99.9\% F1-score while the Autoencoder degrades to 70\% accuracy,
+attributed to class imbalance. No SMOTE or any other imbalance correction is
+applied, and no XAI method is used. This study inherits their XGBoost and RF
+classifiers, hyperparameters (XGBoost: lr=0.3, max\_depth=6,
+n\_estimators=100; RF: n\_estimators=20), and pipeline design to enable fair
+comparison.
+
+\textbf{Key difference:} This work adds SMOTE to correct the imbalance the
+baseline acknowledges but ignores, adds SHAP to provide the explainability
+the baseline completely omits, and evaluates on BGL --- a dataset not tested
+in the original work.
+
+\subsection{XAI for Log Anomaly Detection: SXAD}
+
+Alam et al.\ \cite{alam2024sxad} proposed SXAD, which applies Kernel SHAP to
+explain predictions from Decision Tree, RF, and Gradient Boosting classifiers
+trained on Drain-parsed HDFS log data, reporting 99.99\% accuracy. SXAD is
+the closest existing work to this study.
+
+\textbf{Key difference:} SXAD applies no SMOTE, does not evaluate on BGL,
+and uses Gradient Boosting rather than XGBoost. Critically, SXAD uses Kernel
+SHAP --- a model-agnostic approximation --- whereas this work uses SHAP
+TreeExplainer, which computes exact Shapley values optimised for tree-based
+ensembles, producing more precise feature attributions. Furthermore, no
+prior study combines SMOTE and SHAP together within a single controlled
+experimental design.
+
+\subsection{SMOTE for Imbalanced Security Data}
+
+Talukder et al.\ \cite{talukder2024} applied SMOTE within a 10-fold
+cross-validation framework to XGBoost and RF on the UNSW-NB15 network
+intrusion dataset (41 continuous features), demonstrating consistent Recall
+improvement on the minority attack class. Their work provides the empirical
+basis for the SMOTE hypothesis in this study.
+
+\textbf{Key difference:} UNSW-NB15 consists entirely of continuous numerical
+network traffic features for which SMOTE interpolation is mathematically
+well-defined. This work's features include categorical (template\_id) and
+binary (has\_error) types, for which SMOTE interpolation produces values
+that do not necessarily correspond to real log templates --- a limitation
+this study identifies and empirically evaluates. Additionally, Talukder
+et al.\ use no SHAP analysis; this study extends their finding by also
+explaining which features drove the Recall improvement.
+
+\subsection{Deep Learning for Log Anomaly Detection: DeepLog}
+
+Du et al.\ \cite{du2017deeplog} proposed DeepLog, an LSTM-based approach
+that models normal system execution as log sequences and detects deviations
+using next-log prediction. DeepLog was evaluated on HDFS logs and
+demonstrated strong anomaly detection capability using sequential log
+patterns.
+
+\textbf{Key difference:} DeepLog requires logs to be processed in sequential
+order, which constrains its applicability to streaming IoT environments
+where logs may arrive out of order or in parallel. DeepLog provides no
+post-hoc explanation for individual predictions and does not address class
+imbalance. This work processes each log entry independently, requires no
+sequential ordering, and produces full SHAP explanations --- practical
+advantages for real-world IoT deployment.
+
+\subsection{LogAnomaly: BGL Benchmark}
+
+Meng et al.\ \cite{meng2019loganomaly} proposed LogAnomaly, which detects
+both sequential and quantitative anomalies using an LSTM with template2Vec
+embeddings. LogAnomaly was evaluated on both HDFS and BGL datasets,
+achieving 96\% F1-score on BGL --- establishing the published benchmark for
+this dataset.
+
+\textbf{Key difference:} LogAnomaly requires sequential log ordering and
+provides no post-hoc explanation for any individual prediction. It uses
+dense vector embeddings (template2Vec) rather than interpretable numerical
+features, making the model's internal reasoning opaque. This work achieves
+a higher F1 on BGL (99.54\% vs.\ 96\%) using a simpler, non-sequential
+tree-based approach that additionally provides SHAP feature-level
+explanations and explicit class imbalance correction.
+
+\subsection{SMOTE: Foundational Oversampling Technique}
+
+Chawla et al.\ \cite{chawla2002} introduced SMOTE, which generates synthetic
+minority class samples by interpolating between existing minority instances
+using k-nearest neighbours. SMOTE has since become the standard technique
+for addressing class imbalance in classification tasks, with widespread
+application in medical, security, and fault detection domains.
+
+\textbf{Key difference from direct application:} The original SMOTE was
+designed for continuous numerical features. This study extends SMOTE to a
+domain where features include categorical template identifiers and binary
+keyword indicators, documenting the interpolation limitation and evaluating
+whether Recall improvement is achieved despite it --- which the empirical
+results confirm.
+
+\subsection{SHAP: Unified Model Explainability}
+
+Lundberg and Lee \cite{lundberg2017} introduced SHAP, grounded in cooperative
+game theory's Shapley values, providing consistent and locally accurate
+attribution of each feature's contribution to model predictions. SHAP
+TreeExplainer computes exact Shapley values for tree-based models including
+XGBoost and Random Forest with polynomial time complexity.
+
+\textbf{Key difference from prior XAI applications:} Prior applications of
+SHAP in security settings (e.g., SXAD \cite{alam2024sxad}) use Kernel SHAP,
+which approximates Shapley values using a model-agnostic perturbation
+approach. This work uses TreeExplainer, which exploits the tree structure to
+compute exact values --- more precise and computationally efficient for the
+XGBoost and RF classifiers used here.
+
+% ────────────────────────────────────────────────────────────────────────
+\section{Methodology}
+\label{sec:methodology}
+
+\subsection{Dataset}
+
+The Blue Gene/L (BGL) supercomputer log dataset is sourced from the Loghub
+collection \cite{zhu2023loghub} via Zenodo (DOI: 10.5281/zenodo.8196385).
+BGL contains 4{,}747{,}963 log entries collected over 214.7 days from the
+Lawrence Livermore National Laboratory. Each log entry is labelled: a dash
+(``-'') denotes a normal log, while any other value (e.g., APPREAD, KERDATA,
+KERNELSYSERR) denotes an anomalous event. The dataset comprises 4{,}399{,}503
+normal entries (92.66\%) and 348{,}460 anomalous entries (7.34\%), reflecting
+severe real-world class imbalance.
+
+Each raw log line follows the format:
+\begin{verbatim}
+LABEL TIMESTAMP DATE NODE DATETIME
+      TYPE COMPONENT LEVEL MESSAGE
+\end{verbatim}
+
+\subsection{Log Parsing with Drain3}
+
+Raw log messages are parsed using Drain3 \cite{he2017drain}, a Python~3
+implementation of the Drain log parsing algorithm. Drain3 groups semantically
+similar log messages into clusters via a fixed-depth parse tree, replacing
+variable fields with wildcard placeholders (\texttt{<*>}) and assigning each
+cluster a unique template identifier. Configuration parameters are set to
+similarity threshold 0.4 and tree depth 4, consistent with prior work
+\cite{nguyen2023}. Applied to the full BGL dataset, Drain3 discovers 1{,}823
+unique event templates from 4{,}747{,}963 raw log messages.
+
+\subsection{Feature Extraction}
+
+Five interpretable features are derived from each parsed log entry:
+
+\begin{enumerate}
+  \item \textbf{template\_id}: The integer cluster identifier assigned by
+        Drain3, encoding the structural category of the log message.
+  \item \textbf{template\_length}: The number of tokens in the event
+        template, capturing message structural complexity.
+  \item \textbf{has\_error}: A binary indicator (0 or 1) set to 1 if the
+        original message contains any of the terms \textit{error, fail,
+        fatal, exception, crash} (case-insensitive).
+  \item \textbf{wildcard\_count}: The count of \texttt{<*>} placeholders in
+        the event template, reflecting how variable the log structure is.
+  \item \textbf{template\_freq}: The occurrence count of each template\_id
+        in the training partition, computed exclusively on training data and
+        mapped to the test partition to prevent leakage. This feature
+        encodes the rarity of each log event type.
+\end{enumerate}
+
+Formally, for a training set of size $N_{tr}$ with template assignments
+$\{t_i\}_{i=1}^{N_{tr}}$, the frequency feature for template $t$ is:
+\begin{equation}
+  f(t) = \sum_{i=1}^{N_{tr}} \mathbb{1}[t_i = t]
+  \label{eq:freq}
+\end{equation}
+
+\subsection{Train-Test Split and SMOTE Application}
+
+The dataset is partitioned into 80\% training (3{,}798{,}370 entries) and
+20\% test (949{,}593 entries) using stratified sampling with random seed
+42, preserving the 7.34\% anomaly rate in both partitions. SMOTE
+\cite{chawla2002} is applied exclusively to the training partition after
+splitting to prevent data leakage.
+
+For each minority class instance $\mathbf{x}_i$, SMOTE selects one of its
+$k$ nearest minority-class neighbours $\mathbf{x}_{nn}$ and generates a
+synthetic sample:
+\begin{equation}
+  \mathbf{x}_{syn} = \mathbf{x}_i + \delta \cdot
+                     (\mathbf{x}_{nn} - \mathbf{x}_i),
+  \quad \delta \sim U(0, 1)
+  \label{eq:smote}
+\end{equation}
+
+With $k = 5$ and random seed 42, this procedure balances the training set
+to 3{,}519{,}602 normal and 3{,}519{,}602 anomalous entries (50:50). The
+test partition retains its original class distribution throughout all
+evaluations.
+
+\subsection{Classifiers}
+
+Two tree-based ensemble classifiers are evaluated under two conditions
+each, yielding four experimental runs:
+
+\begin{itemize}
+  \item \textbf{RF (no SMOTE)}: Random Forest, n\_estimators=20, seed=42,
+        trained on imbalanced data.
+  \item \textbf{RF (SMOTE)}: Random Forest, same configuration, trained on
+        SMOTE-balanced data.
+  \item \textbf{XGB (no SMOTE)}: XGBoost, lr=0.3, max\_depth=6,
+        n\_estimators=100, seed=42, trained on imbalanced data.
+  \item \textbf{XGB (SMOTE)}: XGBoost, same configuration, trained on
+        SMOTE-balanced data.
+\end{itemize}
+
+Hyperparameters are held constant across conditions to isolate the effect
+of SMOTE. Algorithm~\ref{alg:pipeline} formalises the complete experimental
+procedure.
+
+\begin{algorithm}[t]
+\caption{Explainable IoT Log Anomaly Detection}
+\label{alg:pipeline}
+\begin{algorithmic}[1]
+\Require Raw log file $\mathcal{L}$, similarity $\sigma$, depth $d$,
+         seed $s$, neighbours $k$
+\Ensure Trained model $f^*$, SHAP explanations $\Phi$
+\State Initialise Drain3 parser $P$ with $\sigma, d$
+\For{each line $l_i \in \mathcal{L}$}
+  \State $(t_i, T_i) \gets P(\text{message}(l_i))$
+        \Comment{template id, template string}
+  \State $y_i \gets \mathbb{1}[\text{label}(l_i) \neq \text{`-'}]$
+\EndFor
+\State Extract features $\mathbf{x}_i = $ (template\_id, template\_length,
+        has\_error, wildcard\_count) for all $i$
+\State $(D_{tr}, D_{te}) \gets$ stratified split with seed $s$, ratio 80:20
+\State Compute frequency map $f(\cdot)$ on $D_{tr}$ via Eq.~\ref{eq:freq}
+\State Append template\_freq to all $\mathbf{x}_i$ via $f(t_i)$
+\State $D_{tr}^{sm} \gets \text{SMOTE}(D_{tr}, k, s)$ via Eq.~\ref{eq:smote}
+\For{each $(D, M) \in \{(D_{tr}, \text{RF}),(D_{tr}^{sm}, \text{RF}),
+                       (D_{tr}, \text{XGB}),(D_{tr}^{sm}, \text{XGB})\}$}
+  \State Train classifier $f_{D,M}$ on $D$
+  \State Evaluate on $D_{te}$: Accuracy, Precision, Recall, F1
+\EndFor
+\State $f^* \gets \arg\max_{f_{D,M}} \text{Recall}(f_{D,M}, D_{te})$
+\State $\Phi \gets$ TreeExplainer$(f^*, $ subsample of $D_{te})$
+\State \Return $f^*, \Phi$
+\end{algorithmic}
+\end{algorithm}
+
+Recall is the primary evaluation metric, reflecting the security-first
+priority where missing a real anomaly (false negative) carries higher
+operational cost than a false alarm (false positive).
+
+\subsection{Evaluation Metrics}
+
+Let TP, FP, TN, FN denote true positives, false positives, true negatives,
+and false negatives respectively. The four standard metrics are:
+
+\begin{align}
+\text{Accuracy} &= \frac{\text{TP} + \text{TN}}
+                        {\text{TP} + \text{FP} + \text{TN} + \text{FN}}
+                        \label{eq:acc} \\
+\text{Precision} &= \frac{\text{TP}}{\text{TP} + \text{FP}}
+                         \label{eq:prec} \\
+\text{Recall} &= \frac{\text{TP}}{\text{TP} + \text{FN}}
+                      \label{eq:rec} \\
+\text{F1} &= 2 \cdot \frac{\text{Precision} \cdot \text{Recall}}
+                          {\text{Precision} + \text{Recall}}
+                  \label{eq:f1}
+\end{align}
+
+\subsection{SHAP Explainability}
+
+SHAP TreeExplainer \cite{lundberg2017} is applied to the best-performing
+model on a stratified 5{,}000-entry sample of the test set. For a model
+$f$, instance $\mathbf{x}$, and feature subset $S \subseteq F$ where
+$F = \{1, \ldots, M\}$, the SHAP value for feature $j$ is:
+\begin{equation}
+  \phi_j = \sum_{S \subseteq F \setminus \{j\}}
+           \frac{|S|!\,(M - |S| - 1)!}{M!}
+           \bigl[v(S \cup \{j\}) - v(S)\bigr]
+  \label{eq:shap}
+\end{equation}
+where $v(S)$ is the model output conditioned on features in $S$.
+TreeExplainer computes Eq.~\ref{eq:shap} exactly in polynomial time by
+exploiting tree structure, avoiding the approximation error of model-agnostic
+methods such as Kernel SHAP.
+
+Three standard visualisations are generated: (1) a global feature importance
+bar chart of mean absolute SHAP values $\bar{\phi}_j = \frac{1}{n}
+\sum_{i=1}^{n} |\phi_j^{(i)}|$, (2) a beeswarm plot showing the distribution
+and direction of each feature's impact, and (3) a waterfall plot explaining
+the prediction for a single anomalous log instance.
+
+% ────────────────────────────────────────────────────────────────────────
+\section{Experimental Setup}
+\label{sec:setup}
+
+All experiments are conducted in Google Colab using Python 3.10. The
+complete software stack comprises: \texttt{pandas} and \texttt{numpy} for
+data handling; \texttt{scikit-learn} for train-test splitting and
+evaluation; \texttt{imbalanced-learn} for SMOTE; \texttt{XGBoost} 2.x;
+\texttt{drain3} for log parsing; and \texttt{shap} for explainability.
+Random seed 42 is fixed throughout all components. The BGL.log file
+(approximately 708~MB) is stored in Google Drive and accessed via Drive
+mount. The parsed dataset is saved as a Parquet checkpoint after Drain3
+processing to enable reproducible re-runs.
+
+Table~\ref{tab:config} summarises the full experimental configuration.
+
+\begin{table}[h]
+\caption{Experimental Configuration}
+\label{tab:config}
+\centering
+\small
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Dataset            & BGL (Blue Gene/L) \\
+Total log entries  & 4{,}747{,}963 \\
+Anomaly rate       & 7.34\% (348{,}460 anomalous) \\
+Log parser         & Drain3 (sim\_th=0.4, depth=4) \\
+Unique templates   & 1{,}823 \\
+Features           & 5 (see Methodology) \\
+Train/Test split   & 80\%/20\% stratified (seed=42) \\
+SMOTE k-neighbours & 5 (seed=42) \\
+RF n\_estimators   & 20 \\
+XGB learning rate  & 0.3 \\
+XGB max depth      & 6 \\
+XGB n\_estimators  & 100 \\
+Primary metric     & Recall \\
+SHAP method        & TreeExplainer (5{,}000-sample subset) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ────────────────────────────────────────────────────────────────────────
+\section{Experimental Results and Discussion}
+\label{sec:results}
+
+\subsection{Classification Performance}
+
+Table~\ref{tab:results} presents Accuracy, Precision, Recall, and F1-score
+for all four experimental conditions evaluated on the held-out test set of
+949{,}593 original BGL log entries. No synthetic samples appear in the test
+set; all metrics reflect performance on real, unmodified data.
+
+\begin{table}[h]
+\caption{Classification Results on BGL Test Set (949{,}593 entries)}
+\label{tab:results}
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & \textbf{Acc.} & \textbf{Prec.} & \textbf{Recall} & \textbf{F1} \\
+\midrule
+RF (no SMOTE)  & 0.9995 & 1.0000 & 0.9932 & 0.9966 \\
+RF (SMOTE)     & 0.9993 & 0.9913 & 0.9995 & 0.9954 \\
+XGB (no SMOTE) & 0.9995 & 1.0000 & 0.9933 & 0.9966 \\
+XGB (SMOTE)*   & 0.9993 & 0.9912 & \textbf{0.9995} & 0.9954 \\
+\midrule
+\multicolumn{5}{l}{\footnotesize * Selected for SHAP analysis. Bold = primary metric.}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Without SMOTE, both RF and XGBoost achieve Recall of 0.9932/0.9933 with
+Precision of 1.0000, missing approximately 469 anomalies per 69{,}692 in
+the test set. With SMOTE, Recall improves to 0.9995 for both classifiers
+--- an absolute gain of 0.0063 --- while Precision decreases marginally to
+0.9912/0.9913. In absolute terms, SMOTE-trained models catch approximately
+434 additional true anomalies at the cost of approximately 613 extra false
+positives.
+
+These results confirm the hypothesis grounded in Talukder et al.\
+\cite{talukder2024}: SMOTE consistently improves Recall for tree-based
+ensemble classifiers on imbalanced security log data. The identical response
+of RF and XGBoost to SMOTE indicates the effect is driven by data balancing
+rather than model-specific characteristics --- a finding that would not be
+observable from a single-classifier experiment. The trade-off --- 0.63\%
+Recall gain for 0.88\% Precision reduction --- is operationally favourable
+in security contexts, where a missed anomaly carries higher cost than a
+false alarm.
+
+\subsection{Comparison with Published Benchmarks}
+
+Table~\ref{tab:benchmark} places the results in context with published
+benchmarks.
+
+\begin{table}[h]
+\caption{Benchmark Comparison}
+\label{tab:benchmark}
+\centering
+\small
+\begin{tabular}{llcc}
+\toprule
+\textbf{Method} & \textbf{Dataset} & \textbf{F1} & \textbf{Source} \\
+\midrule
+LogAnomaly \cite{meng2019loganomaly} & BGL & 0.9600 & IJCAI 2019 \\
+Nguyen \& Nguyen \cite{nguyen2023}   & Thunderbird & 0.9990 & CNIOT 2023 \\
+SXAD \cite{alam2024sxad}             & HDFS & N/A\textsuperscript{a} & IEEE Access 2024 \\
+\textbf{XGB+SMOTE (this work)}       & \textbf{BGL} & \textbf{0.9954} & \textbf{This paper} \\
+\bottomrule
+\multicolumn{4}{l}{\footnotesize \textsuperscript{a}SXAD reports 99.99\% Accuracy; F1 not reported.}\\
+\end{tabular}
+\end{table}
+
+Compared to LogAnomaly \cite{meng2019loganomaly}, which reports 96\% F1 on
+BGL using an LSTM-based sequential approach, this work achieves 99.54\%
+F1-score on the same dataset using a simpler, non-sequential tree-based
+approach while additionally providing SHAP interpretability and explicit
+imbalance correction. The 3.54 percentage-point improvement is achieved
+without sequential log ordering and with full feature-level explainability
+--- a combination not available in any prior BGL study.
+
+\subsection{SHAP Feature Importance}
+
+SHAP TreeExplainer is applied to XGB (SMOTE) on a stratified 5{,}000-entry
+sample of the test set. The global feature importance ranking from highest
+to lowest mean absolute SHAP value is: \textbf{template\_freq},
+\textbf{template\_id}, \textbf{template\_length}, \textbf{wildcard\_count},
+\textbf{has\_error}. Fig.~\ref{fig:shap_importance} shows the global
+importance bar chart.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{shap_importance.png}
+  \caption{SHAP global feature importance for XGBoost trained with SMOTE.
+  Mean absolute SHAP values across 5{,}000 stratified test samples.}
+  \label{fig:shap_importance}
+\end{figure}
+
+Template frequency is the dominant predictive feature, followed by template
+identifier. Together, these two structural features account for the majority
+of the model's predictive signal. The error keyword indicator (has\_error)
+--- the most intuitive anomaly signal --- ranks last, contributing least to
+predictions.
+
+The beeswarm plot in Fig.~\ref{fig:shap_beeswarm} reveals a clear
+directional pattern for template\_freq: low frequency values (blue dots)
+spread far to the right of the zero SHAP axis, strongly pushing predictions
+toward anomaly; high frequency values (red dots) cluster to the left,
+pushing toward normal. This reveals the model's core detection logic:
+\textit{logs following rare event templates are systematically anomalous,
+while high-frequency templates reflect routine system behaviour}.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{shap_beeswarm.png}
+  \caption{SHAP beeswarm plot. Low template\_freq values (blue) push
+  predictions toward anomaly (right); high values (red) push toward normal.}
+  \label{fig:shap_beeswarm}
+\end{figure}
+
+This finding carries direct operational value. A security practitioner can
+use template frequency as a prioritisation signal: log entries from rare
+templates warrant immediate investigation, while high-frequency template
+entries can be deprioritised. This interpretable rule cannot be derived from
+the black-box predictions of the baseline \cite{nguyen2023} or from
+LogAnomaly \cite{meng2019loganomaly}.
+
+Critically, has\_error --- the most intuitive anomaly signal --- ranks
+last. Explicit error keyword matching contributes less predictive signal
+than structural template features, challenging the assumption underlying
+most rule-based log monitoring systems that lexical indicators are the
+primary discriminator.
+
+\subsection{Instance-Level Explainability}
+
+Fig.~\ref{fig:shap_waterfall} presents a SHAP waterfall plot for a single
+anomalous log entry from the test set. The waterfall decomposes the model
+output from the base value $E[f(\mathbf{x})]$ to the final anomaly
+probability, showing each feature's additive contribution. For the selected
+instance, the low template\_freq value is the largest contributor pushing
+the prediction toward anomaly, followed by template\_id. This instance-level
+explanation allows a security analyst to understand precisely which
+structural characteristics triggered each alert --- a capability absent from
+all prior BGL anomaly detection work.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{shap_waterfall.png}
+  \caption{SHAP waterfall plot for a single anomalous BGL log entry, showing
+  each feature's additive contribution to the model output.}
+  \label{fig:shap_waterfall}
+\end{figure}
+
+\subsection{Template-Level Explainability}
+
+Combining SHAP rankings with Drain3 template frequency analysis reveals 20
+specific anomalous templates. Table~\ref{tab:templates} presents the top
+occurrences.
+
+\begin{table}[h]
+\caption{Top Anomalous Templates in BGL Test Set}
+\label{tab:templates}
+\centering
+\small
+\begin{tabular}{clcc}
+\toprule
+\textbf{T-ID} & \textbf{Template (truncated)} & \textbf{Hits} & \textbf{Freq} \\
+\midrule
+18   & data TLB error interrupt               & 142 & 122{,}358 \\
+192  & data storage interrupt                 & 79  & 50{,}781 \\
+587  & Lustre mount FAILED                    & 37  & 21{,}085 \\
+1108 & ciod: Error reading...Link severed     & 29  & 23{,}050 \\
+568  & rts: kernel terminated reason 1001     & 24  & 14{,}876 \\
+449  & ciod: Error after LOGIN\_MESSAGE       & 21  & 18{,}568 \\
+17   & ciod: failed to read control stream    & 11  & 4{,}792 \\
+565  & ciodb exited abnormally: Aborted       & 1   & 18 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The rarest templates (frequency 1--4) receive the highest SHAP anomaly
+scores consistent with the template\_freq finding. For example, Template
+565 (\textit{ciodb exited abnormally due to signal: Aborted}) appears only
+18 times in training yet is flagged with high anomaly confidence --- a
+daemon crash event warranting immediate escalation. Template 824
+(\textit{ddr: redundant bit steering failed, sequencer timeout}), with
+frequency 1, indicates a DDR memory redundancy failure with data integrity
+implications.
+
+\subsection{Threats to Validity}
+
+Following standard guidance for empirical software engineering research, we
+discuss four classes of threats to validity.
+
+\textbf{Internal validity.} All experiments use a single random seed (42).
+While this ensures reproducibility, it does not establish statistical
+significance across multiple runs. Future work should report mean and
+confidence intervals across multiple seeds.
+
+\textbf{External validity.} Results are obtained on a single dataset (BGL),
+which is a supercomputer log corpus rather than a heterogeneous IoT device
+log set. Generalisation to consumer IoT devices, industrial sensors, or
+network edge logs remains to be empirically validated.
+
+\textbf{Construct validity.} The five extracted features are structural and
+frequency-based; semantic content beyond keyword matching is not captured.
+SMOTE interpolates between template\_id values --- a categorical feature
+--- producing synthetic samples that do not necessarily map to real log
+templates. While empirical Recall improvement is observed despite this,
+the synthetic samples are not semantically meaningful as standalone log
+entries.
+
+\textbf{Conclusion validity.} The SHAP analysis is computed on a 5{,}000-
+entry stratified subset of the test set due to computational constraints
+in the Colab environment. A full-test-set SHAP evaluation may yield
+marginally different feature importance rankings.
+
+\subsection{Reproducibility}
+
+To support reproducibility, this work fixes random seed 42 throughout, uses
+publicly available datasets and libraries, and reports all hyperparameters
+in Table~\ref{tab:config}. The complete experimental procedure is given in
+Algorithm~\ref{alg:pipeline}. The BGL dataset is available at
+\url{https://zenodo.org/records/8196385}. All software used (pandas,
+scikit-learn, imbalanced-learn, XGBoost, drain3, shap) is open source.
+The complete source code, parsed dataset checkpoint, and SHAP figures are
+publicly available at
+\url{https://github.com/syedfaisal2407/iot-anomaly-detection-bgl}.
+
+% ────────────────────────────────────────────────────────────────────────
+\section{Novelty}
+\label{sec:novelty}
+
+This work makes four novel contributions not present in any single prior
+study:
+
+\textbf{(N1) First SMOTE+SHAP combination on IoT log data.} SXAD
+\cite{alam2024sxad} applies SHAP to log data without SMOTE. Talukder et al.\
+\cite{talukder2024} apply SMOTE without SHAP. No prior study combines both
+within a controlled experiment, as this work does.
+
+\textbf{(N2) First evaluation of SMOTE+SHAP on BGL.} The BGL dataset has
+been benchmarked by LogAnomaly \cite{meng2019loganomaly} and studied by
+He et al.\ \cite{he2017drain} for parsing evaluation, but no prior study
+applies SMOTE or SHAP to BGL specifically.
+
+\textbf{(N3) Exact SHAP values via TreeExplainer.} Prior log anomaly XAI
+work \cite{alam2024sxad} uses Kernel SHAP approximations. This work uses
+SHAP TreeExplainer, which computes exact Shapley values for XGBoost and
+RF, producing more reliable feature attributions.
+
+\textbf{(N4) Template-level operational explainability.} By combining SHAP
+rankings with Drain3 frequency analysis, this work identifies 20 specific
+anomalous BGL templates with associated system error explanations and
+remediation recommendations --- translating model output into actionable
+security intelligence. No prior BGL anomaly detection work provides this
+level of operational interpretability.
+
+% ────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+\label{sec:conclusion}
+
+This paper extended the IoT log anomaly detection pipeline of Nguyen and
+Nguyen \cite{nguyen2023} by integrating SMOTE \cite{chawla2002} for class
+imbalance correction and SHAP TreeExplainer \cite{lundberg2017} for
+post-hoc interpretability, evaluated on the entire 4{,}747{,}963-entry BGL
+dataset. The controlled four-run experiment demonstrated that SMOTE
+consistently improves Recall from 0.9932 to 0.9995 for both RF and XGBoost,
+catching approximately 434 additional anomalies per test set at the cost of
+613 additional false positives. XGBoost trained with SMOTE achieved the
+best Recall (0.9995) and was selected for SHAP analysis.
+
+SHAP TreeExplainer identified template frequency as the dominant predictive
+feature, establishing that rare event templates are the primary anomaly
+signal --- a finding with direct operational value for security
+practitioners. Compared to the BGL state-of-the-art established by
+LogAnomaly \cite{meng2019loganomaly} (96\% F1), this work achieves 99.54\%
+F1 with a simpler non-sequential architecture while additionally providing
+full feature-level explainability and explicit imbalance correction.
+
+Future work should address SMOTE compatibility with categorical features
+(e.g., SMOTENC), extend SHAP analysis to the full test set, validate
+findings on additional IoT log datasets beyond BGL, perform multi-seed
+statistical significance testing, and explore multi-class anomaly
+classification to automatically recommend remediation actions.
+
+% ────────────────────────────────────────────────────────────────────────
+\section*{Ethics Statement}
+
+This research uses the publicly available BGL dataset
+\cite{zhu2023loghub}, which contains system logs from a Lawrence Livermore
+National Laboratory supercomputer. The dataset contains no personally
+identifiable information. All software used is open source. The research
+is conducted for academic purposes and to advance the state of practice in
+operational security; no offensive applications are intended.
+
+\section*{Acknowledgment}
+
+The author thanks the Department of Computer Information Systems and
+Cybersecurity at Auburn University at Montgomery for supporting this
+research.
+
+% ────────────────────────────────────────────────────────────────────────
+\begin{thebibliography}{00}
+
+\bibitem{nguyen2023}
+H.-T. Nguyen and V. Q. Nguyen,
+``Anomaly Detection in IoT System Logs Using Machine Learning and Deep
+Learning Approaches,''
+in \textit{Proc. ACM Int. Conf. on Computing and Network Communications
+(CNIOT)}, Xiamen, China, 2023, pp. 969--974.
+doi: 10.1145/3603781.3604223.
+
+\bibitem{alam2024sxad}
+S. Alam, K. Kifayat, C. Sampedro, V. Karovi\v{c}, and H. Naeem,
+``SXAD: Shapley eXplainable AI-Based Anomaly Detection Using Log Data,''
+\textit{IEEE Access}, vol.~12, pp. 95659--95672, 2024.
+doi: 10.1109/ACCESS.2024.3425472.
+
+\bibitem{talukder2024}
+Md. A. Talukder \textit{et al.},
+``Machine Learning-Based Network Intrusion Detection for Big and Imbalanced
+Data Using Oversampling and Learning Algorithm,''
+\textit{Journal of Big Data}, vol.~11, no.~1, 2024.
+doi: 10.1186/s40537-024-00886-w.
+
+\bibitem{meng2019loganomaly}
+W. Meng \textit{et al.},
+``LogAnomaly: Unsupervised Detection of Sequential and Quantitative
+Anomalies in Unstructured Logs,''
+in \textit{Proc. IJCAI}, Macao, 2019, pp. 4739--4745.
+doi: 10.24963/ijcai.2019/658.
+
+\bibitem{du2017deeplog}
+M. Du, F. Li, G. Zheng, and V. Srikumar,
+``DeepLog: Anomaly Detection and Diagnosis from System Logs Through Deep
+Learning,''
+in \textit{Proc. ACM CCS}, Dallas, TX, 2017, pp. 1285--1298.
+doi: 10.1145/3133956.3134015.
+
+\bibitem{chawla2002}
+N. V. Chawla, K. W. Bowyer, L. O. Hall, and W. P. Kegelmeyer,
+``SMOTE: Synthetic Minority Over-sampling Technique,''
+\textit{Journal of Artificial Intelligence Research}, vol.~16, pp. 321--357,
+2002.
+doi: 10.1613/jair.953.
+
+\bibitem{lundberg2017}
+S. M. Lundberg and S.-I. Lee,
+``A Unified Approach to Interpreting Model Predictions,''
+in \textit{Proc. NeurIPS}, Long Beach, CA, 2017, pp. 4765--4774.
+
+\bibitem{he2017drain}
+P. He, J. Zhu, Z. Zheng, and M. R. Lyu,
+``Drain: An Online Log Parsing Approach with Fixed Depth Tree,''
+in \textit{Proc. IEEE ICWS}, Honolulu, HI, 2017, pp. 33--40.
+doi: 10.1109/ICWS.2017.8029742.
+
+\bibitem{zhu2023loghub}
+J. Zhu, S. He, P. He, J. Liu, and M. R. Lyu,
+``Loghub: A Large Collection of System Log Datasets for AI-Driven Log
+Analytics,''
+in \textit{Proc. IEEE ISSRE}, 2023.
+doi: 10.1109/ISSRE5003.2020.00012.
+
+\bibitem{breiman2001random}
+L. Breiman,
+``Random Forests,''
+\textit{Machine Learning}, vol.~45, no.~1, pp. 5--32, 2001.
+doi: 10.1023/A:1010933404324.
+
+\bibitem{chen2016xgboost}
+T. Chen and C. Guestrin,
+``XGBoost: A Scalable Tree Boosting System,''
+in \textit{Proc. ACM SIGKDD}, San Francisco, CA, 2016, pp. 785--794.
+doi: 10.1145/2939672.2939785.
+
+\end{thebibliography}
+
+\balance
+
+\end{document}
