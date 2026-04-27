@@ -4,16 +4,17 @@ Explainable Anomaly Detection in IoT System Logs
 Using XGBoost, Random Forest, SMOTE, and SHAP on the BGL dataset.
 
 Author : Faisal Ahamed Syed
-        Department of Computer Information Systems and Cybersecurity
         Auburn University at Montgomery
         fsyed8@aum.edu
-
-Run    : python main.py
-        (set LOG_FILE below to your local BGL.log path)
-
-Notes  : This script is the standalone equivalent of notebooks/main.ipynb.
-        It runs the full 7-stage pipeline end-to-end.
 """
+
+# ──────────────────────────────────────────────────────────────────────────
+# SETUP — Install packages and mount Drive
+# ──────────────────────────────────────────────────────────────────────────
+!pip install drain3 shap imbalanced-learn xgboost -q
+
+from google.colab import drive
+drive.mount('/content/drive')
 
 import os
 import warnings
@@ -36,9 +37,9 @@ warnings.filterwarnings("ignore")
 # ──────────────────────────────────────────────────────────────────────────
 # CONFIGURATION
 # ──────────────────────────────────────────────────────────────────────────
-LOG_FILE     = "BGL.log"          # Set to your local path
-OUTPUT_DIR   = "results"
-SAMPLE_SIZE  = None                # None = full dataset; or e.g. 50000
+LOG_FILE     = "/content/drive/MyDrive/iot-anomaly/BGL.log"
+OUTPUT_DIR   = "/content/drive/MyDrive/iot-anomaly"
+SAMPLE_SIZE  = None      # None = full dataset; or e.g. 50000 for testing
 SEED         = 42
 TEST_SIZE    = 0.2
 SHAP_SAMPLES = 5000
@@ -73,7 +74,7 @@ print(f"  Total: {len(df):,}  Anomaly rate: {df['label'].mean():.2%}")
 # ──────────────────────────────────────────────────────────────────────────
 # STAGE 2 — DRAIN3 PARSING
 # ──────────────────────────────────────────────────────────────────────────
-print("\n[Stage 2] Drain3 parsing...")
+print("\n[Stage 2] Drain3 parsing... (20–30 min on full dataset)")
 config = TemplateMinerConfig()
 config.drain_sim_th = 0.4
 config.drain_depth = 4
@@ -85,11 +86,15 @@ for i, msg in enumerate(df["message"]):
     template_ids.append(res["cluster_id"])
     template_strs.append(res["template_mined"])
     if (i + 1) % 500_000 == 0:
-        print(f"  Parsed {i+1:,} / {len(df):,}")
+        print(f"  Parsed {i+1:,} / {len(df):,}  (templates so far: {len(set(template_ids))})")
 
 df["template_id"]  = template_ids
 df["template_str"] = template_strs
 print(f"  Unique templates: {df['template_id'].nunique()}")
+
+# Save checkpoint to Drive — protects against runtime resets
+df.to_parquet(os.path.join(OUTPUT_DIR, "bgl_parsed.parquet"), index=False)
+print("  Parsed dataset checkpoint saved.")
 
 # ──────────────────────────────────────────────────────────────────────────
 # STAGE 3 — FEATURE EXTRACTION
@@ -162,8 +167,10 @@ results = [
              X_train_sm, y_train_sm, X_test, y_test),
 ]
 results_df = pd.DataFrame(results)
-print("\n", results_df.to_string(index=False))
+print("\n=== RESULTS ===")
+print(results_df.to_string(index=False))
 results_df.to_csv(os.path.join(OUTPUT_DIR, "results.csv"), index=False)
+print("\nResults saved to Drive.")
 
 # ──────────────────────────────────────────────────────────────────────────
 # STAGE 7 — SHAP ON BEST MODEL (XGB + SMOTE)
@@ -189,13 +196,13 @@ shap.summary_plot(shap_values, X_sample, feature_names=features,
                   plot_type="bar", show=False)
 plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, "shap_importance.png"), dpi=150)
-plt.close()
+plt.show()
 
 # Plot 2 — beeswarm
 shap.summary_plot(shap_values, X_sample, feature_names=features, show=False)
 plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, "shap_beeswarm.png"), dpi=150)
-plt.close()
+plt.show()
 
 # Plot 3 — waterfall (one anomaly)
 anomaly_idx = (y_sample.values == 1).nonzero()[0][0]
@@ -210,6 +217,7 @@ shap.plots.waterfall(
 )
 plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, "shap_waterfall.png"), dpi=150)
-plt.close()
+plt.show()
 
-print(f"\nDone. Results saved to ./{OUTPUT_DIR}/")
+print("\nAll SHAP figures saved to Drive.")
+print("Pipeline complete.")
