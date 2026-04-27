@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Data files (do NOT commit raw dataset — too large for GitHub)
+*.log
+*.zip
+*.parquet
+BGL.log
+BGL.zip
+bgl_parsed.parquet
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# LaTeX build artefacts
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
