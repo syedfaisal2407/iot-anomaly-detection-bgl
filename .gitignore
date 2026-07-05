@@ -38,3 +38,6 @@ Thumbs.db
 *.blg
 *.fls
 *.fdb_latexmk
+
+# Pipeline output (local CLI runs)
+output/
