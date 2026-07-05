@@ -9,7 +9,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Colab](https://img.shields.io/badge/Open%20in-Colab-orange.svg)](https://colab.research.google.com/)
+[![Colab](https://img.shields.io/badge/Open%20in-Colab-orange.svg)](https://colab.research.google.com/github/syedfaisal2407/iot-anomaly-detection-bgl/blob/main/notebooks/main.ipynb)
 
 ---
 
@@ -54,8 +54,9 @@ iot-anomaly-detection-bgl/
 ├── README.md                       # This file
 ├── LICENSE                         # MIT License
 ├── requirements.txt                # Python dependencies
+├── main.py                         # Runnable CLI pipeline (all 7 stages)
 ├── notebooks/
-│   └── main.ipynb                  # Complete Colab notebook (all 7 stages)
+│   └── main.ipynb                  # Google Colab version of the pipeline
 ├── results/
 │   ├── results.csv                 # 4-model comparison results
 │   ├── shap_importance.png         # Global feature importance
@@ -91,10 +92,9 @@ Download `BGL.zip` (~709 MB) from Zenodo:
 
 ### Step 3 — Open the notebook in Colab
 
-1. Click the Colab badge at the top of this README, or open
-   https://colab.research.google.com directly
-2. File → Upload notebook → select `notebooks/main.ipynb`
-3. Run all cells in order
+1. Click the Colab badge at the top of this README — it opens
+   `notebooks/main.ipynb` directly in Colab
+2. Run all cells in order
 
 The notebook automatically:
 - Mounts your Google Drive
@@ -125,22 +125,27 @@ pip install -r requirements.txt
 # Download the BGL dataset manually from Zenodo and extract BGL.log
 # https://zenodo.org/records/8196385/files/BGL.zip?download=1
 
-# Open Jupyter
-jupyter notebook notebooks/main.ipynb
+# Run the full pipeline
+python main.py --log-file /path/to/BGL.log --output-dir output/
 ```
 
-Before running, edit Stage 1 in the notebook to point at your local
-`BGL.log` path:
+Useful flags:
 
-```python
-LOG_FILE = "/path/to/your/BGL.log"
 ```
+--sample-size 50000    # quick smoke test on the first 50k lines (~2 min)
+--test-size 0.2        # test split fraction (default 0.2)
+--seed 42              # random seed (default 42)
+--shap-samples 5000    # rows used for SHAP analysis (default 5000)
+```
+
+Results (`results.csv`), the parsed-log checkpoint, and all three SHAP
+figures are written to `--output-dir`.
 
 ---
 
 ## Pipeline Stages
 
-The notebook executes seven sequential stages:
+The pipeline (script or notebook) executes seven sequential stages:
 
 | Stage | What It Does                                       | Output                            |
 |-------|----------------------------------------------------|-----------------------------------|
